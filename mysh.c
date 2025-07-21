@@ -1,3 +1,4 @@
+// Simple custom Linux shell implementation
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,16 +8,18 @@
 #include <sys/wait.h>
 #include <signal.h>
 
+// Structure to store background job info
 typedef struct {
-    pid_t pid;
-    char cmdline[256];
-    int running;
+    pid_t pid;                // Process ID
+    char cmdline[256];        // Command line string
+    int running;              // 1 if running, 0 if done
 } Job;
 
-#define MAX_JOBS 64
-Job jobs[MAX_JOBS];
-int job_count = 0;
+#define MAX_JOBS 64           // Maximum number of jobs
+Job jobs[MAX_JOBS];           // Job table
+int job_count = 0;            // Number of jobs
 
+// Add a new background job to the job table
 void add_job(pid_t pid, const char *cmdline) {
     if (job_count < MAX_JOBS) {
         jobs[job_count].pid = pid;
@@ -27,18 +30,27 @@ void add_job(pid_t pid, const char *cmdline) {
     }
 }
 
+// Update job table: mark finished jobs, print notification, and remove them
 void update_jobs() {
+    int write_idx = 0;
     for (int i = 0; i < job_count; i++) {
         if (jobs[i].running) {
             int status;
             pid_t result = waitpid(jobs[i].pid, &status, WNOHANG);
             if (result == jobs[i].pid) {
                 jobs[i].running = 0;
+                printf("[job done] %s (PID %d)\n", jobs[i].cmdline, jobs[i].pid);
             }
         }
+        // Only keep jobs that are still running
+        if (jobs[i].running) {
+            jobs[write_idx++] = jobs[i];
+        }
     }
+    job_count = write_idx;
 }
 
+// Print all current jobs
 void print_jobs() {
     update_jobs();
     for (int i = 0; i < job_count; i++) {
@@ -46,10 +58,10 @@ void print_jobs() {
     }
 }
 
-#define MAX_ARGS 128
-#define MAX_CMDS 16
+#define MAX_ARGS 128          // Max arguments per command
+#define MAX_CMDS 16           // Max commands in a pipeline
 
-// Find redirection operators and set up files
+// Handle I/O redirection (<, >, >>) for a command
 void handle_redirection(char **args) {
     for (int i = 0; args[i]; i++) {
         if (strcmp(args[i], "<") == 0 && args[i+1]) {
@@ -74,6 +86,7 @@ void handle_redirection(char **args) {
     }
 }
 
+// Split a command line into arguments
 void parse_args(char *line, char **args) {
     int i = 0;
     char *token = strtok(line, " ");
@@ -84,13 +97,15 @@ void parse_args(char *line, char **args) {
     args[i] = NULL;
 }
 
+// Check if a command is a shell built-in
 int is_builtin(char *cmd) {
     return strcmp(cmd, "cd") == 0 || strcmp(cmd, "exit") == 0 || strcmp(cmd, "jobs") == 0;
 }
 
+// Handle built-in commands: cd, exit, jobs
 int handle_builtin(char **args) {
     if (strcmp(args[0], "exit") == 0) {
-        return 1;
+        return 1; // Signal to exit shell
     } else if (strcmp(args[0], "cd") == 0) {
         if (args[1] == NULL) {
             char *home = getenv("HOME");
@@ -105,10 +120,12 @@ int handle_builtin(char **args) {
     return 0;
 }
 
+// Execute a pipeline of commands (with |)
 void execute_pipeline(char *cmdline, int background) {
     char *commands[MAX_CMDS];
     int num_cmds = 0;
 
+    // Split pipeline into individual commands
     char *cmd = strtok(cmdline, "|");
     while (cmd && num_cmds < MAX_CMDS - 1) {
         while (*cmd == ' ') cmd++; // trim leading spaces
@@ -117,6 +134,7 @@ void execute_pipeline(char *cmdline, int background) {
     }
 
     int pipes[MAX_CMDS - 1][2];
+    // Create pipes for inter-process communication
     for (int i = 0; i < num_cmds - 1; i++) {
         if (pipe(pipes[i]) < 0) {
             perror("pipe");
@@ -124,6 +142,7 @@ void execute_pipeline(char *cmdline, int background) {
         }
     }
 
+    // Fork and execute each command in the pipeline
     for (int i = 0; i < num_cmds; i++) {
         char *args[MAX_ARGS];
         parse_args(commands[i], args);
@@ -134,12 +153,12 @@ void execute_pipeline(char *cmdline, int background) {
             if (i > 0) dup2(pipes[i - 1][0], STDIN_FILENO);
             if (i < num_cmds - 1) dup2(pipes[i][1], STDOUT_FILENO);
 
-            // Handle I/O redirection only for first and last command
+            // Handle I/O redirection for first/last command
             if (i == 0 || i == num_cmds - 1) {
                 handle_redirection(args);
             }
 
-            // Close all pipe fds
+            // Close all pipe fds in child
             for (int j = 0; j < num_cmds - 1; j++) {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
@@ -151,11 +170,13 @@ void execute_pipeline(char *cmdline, int background) {
         }
     }
 
+    // Close all pipe fds in parent
     for (int i = 0; i < num_cmds - 1; i++) {
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
 
+    // Wait for all pipeline children if foreground
     if (!background) {
         for (int i = 0; i < num_cmds; i++) wait(NULL);
     } else {
@@ -163,37 +184,41 @@ void execute_pipeline(char *cmdline, int background) {
     }
 }
 
-void process_input(char *line) {
+// Parse and execute a single input line
+// Returns 1 if shell should exit, 0 otherwise
+int process_input(char *line) {
     int background = 0;
 
-    // Check for trailing &
+    // Check for trailing & (background job)
     char *amp = strrchr(line, '&');
     if (amp && *(amp + 1) == '\0') {
         background = 1;
-        *amp = '\0'; // truncate the & from input
+        *amp = '\0'; // Remove & from input
     }
 
-    // Remove newline or trailing space
+    // Remove trailing spaces/newlines
     size_t len = strlen(line);
     while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\n'))
         line[--len] = '\0';
 
-    // If it’s a pipeline
+    // If pipeline, execute as pipeline
     if (strchr(line, '|')) {
         execute_pipeline(line, background);
-        return;
+        return 0;
     }
 
-    // Normal command
+    // Parse arguments for normal command
     char *args[MAX_ARGS];
     parse_args(line, args);
-    if (args[0] == NULL) return;
+    if (args[0] == NULL) return 0;
 
+    // Handle built-in commands
     if (is_builtin(args[0])) {
-        if (handle_builtin(args)) exit(0);
-        return;
+        if (handle_builtin(args)) return 1; // signal exit
+        return 0;
     }
 
+    // Fork and execute external command
     pid_t pid = fork();
     if (pid == 0) {
         handle_redirection(args);
@@ -208,24 +233,30 @@ void process_input(char *line) {
             printf("[bg] PID %d running\n", pid);
         }
     }
+    return 0;
 }
 
+// SIGCHLD handler: called when child process terminates
 void sigchld_handler(int sig) {
     (void)sig;
-    while (waitpid(-1, NULL, WNOHANG) > 0);
+    update_jobs();
 }
 
+// SIGINT handler: called on Ctrl+C
 void sigint_handler(int sig) {
     printf("\nType 'exit' to quit.\nmysh> ");
     fflush(stdout);
 }
 
+// SIGTSTP handler: called on Ctrl+Z
 void sigtstp_handler(int sig) {
     printf("\nStopped (SIGTSTP ignored)\nmysh> ");
     fflush(stdout);
 }
 
+// Main shell loop
 int main() {
+    // Set up signal handlers
     signal(SIGCHLD, sigchld_handler);
     signal(SIGINT, sigint_handler);
     signal(SIGTSTP, sigtstp_handler);
@@ -237,13 +268,14 @@ int main() {
         printf("mysh> ");
         fflush(stdout);
 
+        // Read input line
         ssize_t nread = getline(&line, &len, stdin);
         if (nread == -1) break;
 
         if (line[nread - 1] == '\n') line[nread - 1] = '\0';
         if (strlen(line) == 0) continue;
 
-        process_input(line);
+        if (process_input(line)) break; // exit if requested
     }
 
     free(line);
