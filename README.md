@@ -55,7 +55,4 @@ cat t1.txt | wc -l
 - [ ] Add tests and example scripts
 
 ## Author
-Manoj
-
----
-This project is for educational purposes and demonstrates basic shell concepts in C.
+Manoj (23110025)
