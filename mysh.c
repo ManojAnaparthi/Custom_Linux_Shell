@@ -13,6 +13,7 @@ typedef struct {
     pid_t pid;                // Process ID
     char cmdline[256];        // Command line string
     int running;              // 1 if running, 0 if done
+    int stopped;              // 1 if stopped (SIGTSTP), 0 otherwise
 } Job;
 
 #define MAX_JOBS 64           // Maximum number of jobs
@@ -26,6 +27,7 @@ void add_job(pid_t pid, const char *cmdline) {
         strncpy(jobs[job_count].cmdline, cmdline, 255);
         jobs[job_count].cmdline[255] = '\0';
         jobs[job_count].running = 1;
+        jobs[job_count].stopped = 0;
         job_count++;
     }
 }
@@ -36,14 +38,19 @@ void update_jobs() {
     for (int i = 0; i < job_count; i++) {
         if (jobs[i].running) {
             int status;
-            pid_t result = waitpid(jobs[i].pid, &status, WNOHANG);
+            pid_t result = waitpid(jobs[i].pid, &status, WNOHANG | WUNTRACED);
             if (result == jobs[i].pid) {
-                jobs[i].running = 0;
-                printf("[job done] %s (PID %d)\n", jobs[i].cmdline, jobs[i].pid);
+                if (WIFSTOPPED(status)) {
+                    jobs[i].stopped = 1;
+                    printf("[job stopped] %s (PID %d)\n", jobs[i].cmdline, jobs[i].pid);
+                } else {
+                    jobs[i].running = 0;
+                    printf("[job done] %s (PID %d)\n", jobs[i].cmdline, jobs[i].pid);
+                }
             }
         }
-        // Only keep jobs that are still running
-        if (jobs[i].running) {
+        // Only keep jobs that are still running or stopped
+        if (jobs[i].running || jobs[i].stopped) {
             jobs[write_idx++] = jobs[i];
         }
     }
@@ -54,7 +61,8 @@ void update_jobs() {
 void print_jobs() {
     update_jobs();
     for (int i = 0; i < job_count; i++) {
-        printf("[%d] %s [%s] (PID %d)\n", i+1, jobs[i].cmdline, jobs[i].running ? "Running" : "Done", jobs[i].pid);
+        printf("[%d] %s [%s] (PID %d)\n", i+1, jobs[i].cmdline,
+            jobs[i].running ? "Running" : (jobs[i].stopped ? "Stopped" : "Done"), jobs[i].pid);
     }
 }
 
@@ -99,7 +107,8 @@ void parse_args(char *line, char **args) {
 
 // Check if a command is a shell built-in
 int is_builtin(char *cmd) {
-    return strcmp(cmd, "cd") == 0 || strcmp(cmd, "exit") == 0 || strcmp(cmd, "jobs") == 0;
+    return strcmp(cmd, "cd") == 0 || strcmp(cmd, "exit") == 0 || strcmp(cmd, "jobs") == 0 ||
+           strcmp(cmd, "fg") == 0 || strcmp(cmd, "bg") == 0 || strcmp(cmd, "kill") == 0 || strcmp(cmd, "stp") == 0;
 }
 
 // Handle built-in commands: cd, exit, jobs
@@ -116,6 +125,64 @@ int handle_builtin(char **args) {
         }
     } else if (strcmp(args[0], "jobs") == 0) {
         print_jobs();
+    } else if (strcmp(args[0], "fg") == 0 && args[1]) {
+        int jobnum = atoi(args[1]) - 1;
+        if (jobnum >= 0 && jobnum < job_count) {
+            Job *job = &jobs[jobnum];
+            if (job->running) {
+                kill(job->pid, SIGCONT);
+                printf("[fg] Job %d brought to foreground\n", jobnum+1);
+                waitpid(job->pid, NULL, 0);
+                job->running = 0;
+            } else {
+                printf("Job %d is not running\n", jobnum+1);
+            }
+        } else {
+            printf("Invalid job number\n");
+        }
+    } else if (strcmp(args[0], "bg") == 0 && args[1]) {
+        int jobnum = atoi(args[1]) - 1;
+        if (jobnum >= 0 && jobnum < job_count) {
+            Job *job = &jobs[jobnum];
+            if (job->stopped) {
+                kill(job->pid, SIGCONT);
+                job->running = 1;
+                job->stopped = 0;
+                printf("[bg] Job %d resumed in background\n", jobnum+1);
+            } else {
+                printf("Job %d is not stopped\n", jobnum+1);
+            }
+        } else {
+            printf("Invalid job number\n");
+        }
+    } else if (strcmp(args[0], "kill") == 0 && args[1]) {
+        int jobnum = atoi(args[1]) - 1;
+        if (jobnum >= 0 && jobnum < job_count) {
+            Job *job = &jobs[jobnum];
+            if (job->running) {
+                kill(job->pid, SIGKILL);
+                printf("[kill] Job %d killed\n", jobnum+1);
+            } else {
+                printf("Job %d is not running\n", jobnum+1);
+            }
+        } else {
+            printf("Invalid job number\n");
+        }
+    } else if (strcmp(args[0], "stp") == 0 && args[1]) {
+        int jobnum = atoi(args[1]) - 1;
+        if (jobnum >= 0 && jobnum < job_count) {
+            Job *job = &jobs[jobnum];
+            if (job->running) {
+                kill(job->pid, SIGTSTP);
+                job->running = 0;
+                job->stopped = 1;
+                printf("[stp] Job %d stopped (SIGTSTP sent)\n", jobnum+1);
+            } else {
+                printf("Job %d is not running\n", jobnum+1);
+            }
+        } else {
+            printf("Invalid job number\n");
+        }
     }
     return 0;
 }
@@ -164,8 +231,11 @@ void execute_pipeline(char *cmdline, int background) {
                 close(pipes[j][1]);
             }
 
-            execvp(args[0], args);
-            perror("execvp");
+            // Safety: only execvp if args[0] is not NULL
+            if (args[0] != NULL && strlen(args[0]) > 0) {
+                execvp(args[0], args);
+                perror("execvp");
+            }
             exit(1);
         }
     }
@@ -250,7 +320,7 @@ void sigint_handler(int sig) {
 
 // SIGTSTP handler: called on Ctrl+Z
 void sigtstp_handler(int sig) {
-    printf("\nStopped (SIGTSTP ignored)\nmysh> ");
+    printf("\nNot Stopped (SIGTSTP ignored)\nmysh> ");
     fflush(stdout);
 }
 

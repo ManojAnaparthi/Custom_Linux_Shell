@@ -7,6 +7,7 @@ A simple custom Linux shell implemented in C.
 - Built-in commands: `cd`, `exit`, `jobs`
 - Foreground and background process management (`sleep 5 &`)
 - Job table for background jobs, with automatic cleanup and notifications
+- Job control: `fg`, `bg`, `kill`, `stp` (pause/resume/kill jobs)
 - I/O redirection: `<`, `>`, `>>`
 - Piped commands: `ls | grep txt | wc -l`
 - Signal handling: `SIGINT` (Ctrl+C), `SIGTSTP` (Ctrl+Z), `SIGCHLD` (prevents zombies)
@@ -48,7 +49,6 @@ cat t1.txt | wc -l
 ## TODOs
 - [ ] Add environment variable expansion
 - [ ] Add command history and arrow key navigation
-- [ ] Add job control (fg/bg/kill)
 - [ ] Add tab completion
 - [ ] Add support for quoting/escaping arguments
 - [ ] Improve error messages and user feedback
