@@ -42,11 +42,6 @@ cat t1.txt | wc -l
 
 ## Known Bugs / Limitations
 - No environment variable expansion (e.g., `$HOME` is not expanded)
-- No command history or arrow key navigation
-- No support for job control (fg/bg/kill)
-- No tab completion
-- No quoting or escaping (arguments split only by spaces)
-- No support for multiple background pipelines in job table
 - No support for exporting variables
 - No support for advanced shell scripting features
 
