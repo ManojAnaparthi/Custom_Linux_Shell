@@ -1,4 +1,4 @@
-# myshell
+# myshelle
 
 A simple custom Linux shell implemented in C.
 
